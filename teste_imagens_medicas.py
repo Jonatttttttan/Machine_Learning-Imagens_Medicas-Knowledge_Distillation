@@ -49,7 +49,7 @@ def balance_dataset(dataset, seed = 42):
 def get_labels(dataset):
     if isinstance(dataset, Subset):
         return dataset.dataset.labels.flatten()[dataset.indices]
-    return dataset.labels.flatteb()
+    return dataset.labels.flatten()
 
 
 def get_dataloaders(splits=("train", "val", "test"), batch_size=32, size=IMG_SIZE,
