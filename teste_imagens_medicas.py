@@ -181,6 +181,21 @@ def validate(model, val_loader, criterion, device):
 
     return val_loss, val_acc
 
+def distillation_loss(student_logits, teacher_logits, labels, temperature=4.0, alpha=0.5):
+    """Loss de KD offline: combina a loss "hard" (rótulo real) com a loss "soft" """
+    hard_loss = F.cross_entropy(student_logits, labels)
+
+    soft_targets = F.softmax(teacher_logits / temperature, dim = 1)
+    soft_predictions = F.log_softmax(student_logits / temperature, dim=1)
+
+    soft_loss = F.kl_div(
+        soft_predictions,
+        soft_targets,
+        reduction='batchmean'
+    ) * (temperature ** 2)
+
+    return alpha * hard_loss + (1 - alpha) * soft_loss
+
 
 def train_teacher_and_student_baseline(model, train_loader, val_loader, epochs, criterion, optimizer, device):
 
@@ -204,7 +219,7 @@ def train_teacher_and_student_baseline(model, train_loader, val_loader, epochs, 
 
             _, predicted = torch.max(outputs, 1)
             train_total += labels.size(0)
-            train_correct += (predicted == labels.squeeze().long().sum().item())
+            train_correct += (predicted == labels.squeeze().long()).sum().item()
 
         train_loss /= len(train_loader)
         train_acc = train_correct / train_total
@@ -222,8 +237,54 @@ def train_teacher_and_student_baseline(model, train_loader, val_loader, epochs, 
             f"Train Loss: {train_loss:.4f} | "
             f"Train Acc: {train_acc:.4f} | "
             f"Val Loss: {val_loss:.4f} | "
-            f"Val Acc: {val_acc:.4f | }"
+            f"Val Acc: {val_acc:.4f}"
         )
+    return history
+
+def train_knowledge_distillation(teacher, student, train_loader, val_loader, epochs,
+                                 T, alpha, optimizer, device, verbose=True):
+    ce_loss = nn.CrossEntropyLoss()
+    history = {"train_loss": [], "train_acc": [], "val_acc": []}
+
+    teacher.eval() # teacher sempre em avaliação (BatchNorm) e sem gradiente
+
+    for epoch in range(epochs):
+        student.train()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        for inputs, labels in train_loader:
+            labels = labels.squeeze().long()
+            inputs, labels = inputs.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+
+            with torch.no_grad():
+                teacher_logits = teacher(inputs)
+            student_logits = student(inputs)
+
+            loss = distillation_loss(student_logits, teacher_logits, labels, T, alpha)
+
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+            correct += (student_logits.argmax(dim=1) == labels).sum().item()
+            total += labels.size(0)
+
+        train_loss = running_loss / len(train_loader)
+        train_acc = correct / total
+        val_loss, val_acc = validate(student, val_loader, ce_loss, device)
+
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_acc)
+
+        if verbose:
+            print(f"Epoch [{epoch+1}/{epochs}] Train Loss: {train_loss:.4f} Train Acc: {train_acc:.4f} "
+                  f"Val Loss: {val_loss:.4f} Val Acc: {val_acc:.4f}")
     return history
 
 if __name__ == "__main__":
